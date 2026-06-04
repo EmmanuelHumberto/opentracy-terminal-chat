@@ -3,6 +3,7 @@
 Uso:
     uv run python -m app.main
     uv run python -m app.main --mock   # modo offline para testes
+    uv run python -m app.main --bootstrap  # forca bootstrap mesmo se token existir
 """
 
 from __future__ import annotations
@@ -11,13 +12,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from app.bootstrap import validate
+from app.bootstrap import run as run_bootstrap
 from app.chat import ChatContext, build_router, run_chat_loop
 from app.config import load_config
 from app.logger import JsonlLogger
 from app.memory import SessionManager
 from app.opentracy_client import OpenTracyClient
-from app.renderer import print_error, print_info
+from app.renderer import print_error, print_info, print_success
 
 
 def main() -> None:
@@ -28,6 +29,11 @@ def main() -> None:
         "--mock",
         action="store_true",
         help="Modo mock: nao conecta ao OpenTracy",
+    )
+    parser.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="Forca bootstrap automatico mesmo se token existir",
     )
     parser.add_argument(
         "--config",
@@ -60,13 +66,35 @@ def main() -> None:
         return
 
     # --- Bootstrap ---
-    result = validate(config)
-    if not result.success:
-        print_error(result.error or "Falha na validacao do ambiente.")
-        sys.exit(1)
-
-    auth_token = result.auth_token
-    print_info("Ambiente validado com sucesso.")
+    if args.bootstrap:
+        print_info("Executando bootstrap automatico...")
+        result = run_bootstrap(config)
+        if not result.success:
+            print_error(result.error or "Falha no bootstrap.")
+            sys.exit(1)
+        if result.agent_created:
+            print_success(f"Agente '{config.opentracy.agent_id}' criado.")
+        if result.token_created:
+            print_success("Token do canal API salvo.")
+        print_info("Bootstrap concluido com sucesso.")
+    else:
+        # Tenta validacao simples primeiro
+        from app.auth import load_token as load_token_simple
+        try:
+            auth_token = load_token_simple(config.auth.api_token_file)
+        except Exception:
+            # Se nao tem token, faz bootstrap automatico
+            print_info("Token nao encontrado. Executando bootstrap automatico...")
+            result = run_bootstrap(config)
+            if not result.success:
+                print_error(result.error or "Falha no bootstrap.")
+                sys.exit(1)
+            if result.agent_created:
+                print_success(f"Agente '{config.opentracy.agent_id}' criado.")
+            if result.token_created:
+                print_success("Token do canal API salvo.")
+            print_info("Bootstrap concluido.")
+            auth_token = result.auth_token
 
     # --- Cliente HTTP ---
     client = OpenTracyClient(

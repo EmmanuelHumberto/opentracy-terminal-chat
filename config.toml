@@ -1,7 +1,7 @@
 [opentracy]
 backend_url = "http://localhost:8002"
 runtime_url = "http://localhost:8001"
-agent_id = "ligadoai-terminal"
+agent_id = "_default"
 timeout = 30
 
 [auth]
