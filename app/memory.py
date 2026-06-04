@@ -80,8 +80,7 @@ class Session:
         recent: list[dict[str, Any]],
         user_message: str,
     ) -> int:
-        """Estima o total de caracteres do contexto (resumo + historico
-        recente + mensagem atual). Usado para decidir se deve resumir."""
+        """Estima o total de caracteres do contexto."""
         total = 0
         if summary:
             total += len(summary)
@@ -89,6 +88,22 @@ class Session:
             total += len(m.get("content", ""))
         total += len(user_message)
         return total
+
+    def trim_history_after_summary(self, keep_last: int = 2) -> None:
+        """Remove mensagens antigas do JSONL, mantendo apenas as ultimas
+        `keep_last` mensagens apos o ultimo resumo. Isso evita que o
+        historico cresca indefinidamente."""
+        messages = self._load_all()
+        if len(messages) <= keep_last:
+            return
+
+        # Mantem apenas as ultimas N mensagens
+        trimmed = messages[-keep_last:]
+
+        # Reescreve o arquivo
+        with self.history_path.open("w", encoding="utf-8") as f:
+            for msg in trimmed:
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
 
     # ------------------------------------------------------------------
     # Resumo (Markdown)

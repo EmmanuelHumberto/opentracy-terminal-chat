@@ -1,16 +1,22 @@
 """Bootstrap automatico do ambiente OpenTracy.
 
 Fase 1: apenas valida se agente e token existem.
-Fase 2: cria/ativa agente, conecta canal API, salva token, valida DeepSeek.
+Fase 2: cria/ativa agente, conecta canal API, salva token, valida DeepSeek,
+        ajusta rota para DeepSeek se necessario.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
-from app.auth import AuthError, load_token, save_token, token_status
+from app.auth import AuthError, load_token, save_token
 from app.config import Config
 from app.opentracy_client import OpenTracyClient, OpenTracyError
+
+
+# Caminho base do OpenTracy
+OPENTRACY_ROOT = "/home/hiatus/Projetos/ligadotattoo/OpenTracy"
 
 
 class BootstrapResult:
@@ -23,27 +29,18 @@ class BootstrapResult:
         error: Optional[str] = None,
         agent_created: bool = False,
         token_created: bool = False,
+        route_updated: bool = False,
     ) -> None:
         self.success = success
         self.auth_token = auth_token
         self.error = error
         self.agent_created = agent_created
         self.token_created = token_created
+        self.route_updated = route_updated
 
 
 def run(config: Config) -> BootstrapResult:
-    """Executa bootstrap completo: validacao + provisionamento automatico.
-
-    Fluxo:
-      1. Health check backend e runtime
-      2. Lista agentes
-      3. Cria agente se nao existir
-      4. Ativa agente
-      5. Valida rota DeepSeek
-      6. Conecta canal API se necessario
-      7. Salva token localmente
-      8. Verifica DeepSeek configurado
-    """
+    """Executa bootstrap completo."""
     client = OpenTracyClient(
         backend_url=config.opentracy.backend_url,
         runtime_url=config.opentracy.runtime_url,
@@ -54,24 +51,18 @@ def run(config: Config) -> BootstrapResult:
     agent_id = config.opentracy.agent_id
     agent_created = False
     token_created = False
+    route_updated = False
 
     # --- 1. Health check ---
     if not client.check_backend_health():
         return BootstrapResult(
             success=False,
-            error=(
-                f"Backend {config.opentracy.backend_url} nao respondeu.\n"
-                f"Execute 'make up' no OpenTracy."
-            ),
+            error=f"Backend {config.opentracy.backend_url} nao respondeu.\nExecute 'make up' no OpenTracy.",
         )
-
     if not client.check_runtime_health():
         return BootstrapResult(
             success=False,
-            error=(
-                f"Runtime {config.opentracy.runtime_url} nao respondeu.\n"
-                f"Execute 'make up' no OpenTracy."
-            ),
+            error=f"Runtime {config.opentracy.runtime_url} nao respondeu.\nExecute 'make up' no OpenTracy.",
         )
 
     # --- 2. Lista agentes ---
@@ -79,7 +70,6 @@ def run(config: Config) -> BootstrapResult:
         agents = client.list_agents("")
     except OpenTracyError:
         agents = []
-
     agent_exists = any(a.get("id") == agent_id for a in agents)
 
     # --- 3. Criar agente se necessario ---
@@ -88,58 +78,48 @@ def run(config: Config) -> BootstrapResult:
             _create_agent(client, agent_id)
             agent_created = True
         except OpenTracyError as exc:
-            return BootstrapResult(
-                success=False,
-                error=f"Erro ao criar agente '{agent_id}': {exc}",
-            )
+            return BootstrapResult(success=False, error=f"Erro ao criar agente '{agent_id}': {exc}")
 
-    # --- 4. Ativar agente ---
+    # --- 4. Ativar agente via API ---
     try:
         _activate_agent(client, agent_id)
     except OpenTracyError as exc:
-        return BootstrapResult(
-            success=False,
-            error=f"Erro ao ativar agente '{agent_id}': {exc}",
-        )
+        return BootstrapResult(success=False, error=f"Erro ao ativar agente '{agent_id}': {exc}")
 
-    # --- 5. Validar rota DeepSeek ---
+    # --- 5. Ajustar rota para DeepSeek (tanto em agents/<id>/ quanto em agent/) ---
     try:
-        _validate_deepseek_route(client, agent_id)
-    except OpenTracyError as exc:
-        return BootstrapResult(
-            success=False,
-            error=str(exc),
-        )
+        route_updated = _ensure_deepseek_route(agent_id, config)
+    except Exception as exc:
+        return BootstrapResult(success=False, error=f"Erro ao ajustar rota DeepSeek: {exc}")
 
-    # --- 6. Conectar canal API ---
+    # --- 6. Conectar ou rotacionar canal API ---
     try:
         token = _ensure_api_channel(client, agent_id)
     except OpenTracyError as exc:
-        return BootstrapResult(
-            success=False,
-            error=f"Erro ao conectar canal API: {exc}",
-        )
+        return BootstrapResult(success=False, error=f"Erro ao conectar canal API: {exc}")
 
     # --- 7. Salvar token localmente ---
     try:
         save_token(token, config.auth.api_token_file)
         token_created = True
     except AuthError as exc:
-        return BootstrapResult(
-            success=False,
-            error=f"Erro ao salvar token: {exc}",
-        )
+        return BootstrapResult(success=False, error=f"Erro ao salvar token: {exc}")
 
     # --- 8. Verificar DeepSeek ---
     deepseek_ok = _check_deepseek(client, agent_id)
+    if not deepseek_ok:
+        return BootstrapResult(
+            success=False,
+            error="DeepSeek nao configurado. Adicione DEEPSEEK_API_KEY no .env do OpenTracy.",
+        )
 
-    # --- Resultado ---
     auth_token = load_token(config.auth.api_token_file)
     return BootstrapResult(
         success=True,
         auth_token=auth_token,
         agent_created=agent_created,
         token_created=token_created,
+        route_updated=route_updated,
     )
 
 
@@ -149,88 +129,100 @@ def run(config: Config) -> BootstrapResult:
 
 
 def _create_agent(client: OpenTracyClient, agent_id: str) -> None:
-    """Cria o agente via API."""
+    import httpx
     payload = {
         "name": agent_id,
         "model": "deepseek-chat",
-        "prompt": (
-            "Voce e um assistente tecnico da Ligado IoT para manutencao, "
-            "diagnostico, documentacao e analise industrial. "
-            "Responda em portugues, seja objetivo e cite limites "
-            "quando nao tiver dados suficientes."
-        ),
+        "prompt": "Voce e um assistente tecnico da Ligado IoT para manutencao, diagnostico, documentacao e analise industrial. Responda em portugues, seja objetivo e cite limites quando nao tiver dados suficientes.",
         "tools": [],
         "channels": ["api"],
     }
-    # Tenta criar via backend
-    url = f"{client.backend_url}/v1/agents"
     try:
-        import httpx
-        r = httpx.post(
-            url,
-            json=payload,
-            timeout=30,
-        )
+        r = httpx.post(f"{client.backend_url}/v1/agents", json=payload, timeout=30)
         if r.status_code not in (200, 201):
-            raise OpenTracyError(
-                f"HTTP {r.status_code} ao criar agente: {r.text[:200]}"
-            )
+            raise OpenTracyError(f"HTTP {r.status_code} ao criar agente: {r.text[:200]}")
     except httpx.RequestError as exc:
         raise OpenTracyError(f"Falha ao criar agente: {exc}") from exc
 
 
 def _activate_agent(client: OpenTracyClient, agent_id: str) -> None:
-    """Ativa o agente."""
-    url = f"{client.backend_url}/v1/agents/{agent_id}/activate"
+    import httpx
     try:
-        import httpx
-        r = httpx.post(url, timeout=30)
+        r = httpx.post(f"{client.backend_url}/v1/agents/{agent_id}/activate", timeout=30)
         if r.status_code not in (200, 201):
-            raise OpenTracyError(
-                f"HTTP {r.status_code} ao ativar agente: {r.text[:200]}"
-            )
+            raise OpenTracyError(f"HTTP {r.status_code} ao ativar agente: {r.text[:200]}")
     except httpx.RequestError as exc:
         raise OpenTracyError(f"Falha ao ativar agente: {exc}") from exc
 
 
-def _validate_deepseek_route(client: OpenTracyClient, agent_id: str) -> None:
-    """Valida se a rota do agente usa DeepSeek.
+def _ensure_deepseek_route(agent_id: str, config: Config) -> bool:
+    """Ajusta a rota para DeepSeek nos dois diretorios: agents/<id>/ e agent/."""
+    small = config.model.small
+    big = config.model.big
+    updated = False
 
-    Por enquanto, apenas verifica se o modelo small contem 'deepseek'.
-    O ideal seria ler o route.yaml do agente, mas isso requer autenticacao.
-    """
-    # TODO: Fazer GET no route.yaml ou /agent/config para validar modelo
-    pass
+    # Diretorios onde o route.yaml pode estar
+    candidates = [
+        os.path.join(OPENTRACY_ROOT, "agents", agent_id, "pipeline", "route.yaml"),
+        os.path.join(OPENTRACY_ROOT, "agent", "pipeline", "route.yaml"),
+    ]
+
+    for route_path in candidates:
+        if not os.path.exists(route_path):
+            continue
+
+        try:
+            with open(route_path) as f:
+                content = f.read()
+
+            if "deepseek" in content:
+                continue  # ja atualizado
+
+            # Substitui modelos Claude por DeepSeek
+            content = content.replace("claude-opus-4-7", small)
+            content = content.replace("claude-sonnet-4-6", big)
+            content = content.replace("claude-haiku-4-5", small)
+
+            with open(route_path, 'w') as f:
+                f.write(content)
+
+            updated = True
+        except Exception:
+            pass
+
+    return updated
 
 
 def _ensure_api_channel(client: OpenTracyClient, agent_id: str) -> str:
-    """Conecta o canal API e retorna o token."""
-    url = f"{client.backend_url}/v1/agents/{agent_id}/channels/api/connect"
+    import httpx
     try:
-        import httpx
-        r = httpx.post(url, timeout=30)
-        if r.status_code not in (200, 201):
-            raise OpenTracyError(
-                f"HTTP {r.status_code} ao conectar canal API: {r.text[:200]}"
-            )
-        data = r.json()
-        token = data.get("token")
-        if not token:
-            raise OpenTracyError("Resposta sem token ao conectar canal API.")
-        return token
+        r = httpx.post(f"{client.backend_url}/v1/agents/{agent_id}/channels/api/connect", timeout=30)
+        if r.status_code in (200, 201):
+            data = r.json()
+            token = data.get("token")
+            if token:
+                return token
     except httpx.RequestError as exc:
         raise OpenTracyError(f"Falha ao conectar canal API: {exc}") from exc
 
+    if r.status_code == 409:
+        try:
+            r = httpx.post(f"{client.backend_url}/v1/agents/{agent_id}/channels/api/rotate", timeout=30)
+            if r.status_code in (200, 201):
+                data = r.json()
+                token = data.get("token")
+                if token:
+                    return token
+        except httpx.RequestError as exc:
+            raise OpenTracyError(f"Falha ao rotacionar token: {exc}") from exc
+
+    raise OpenTracyError(f"HTTP {r.status_code} ao configurar canal API: {r.text[:200]}")
+
 
 def _check_deepseek(client: OpenTracyClient, agent_id: str) -> bool:
-    """Verifica se DeepSeek esta configurado (via env ou secrets)."""
-    # Tenta ler do runtime direto
+    import httpx
     try:
-        import httpx
-        r = httpx.get(
-            f"{client.runtime_url}/agents/{agent_id}/secrets",
-            timeout=10,
-        )
+        r = httpx.get(f"{client.runtime_url}/agents/{agent_id}/secrets", timeout=10)
         if r.is_success:
             data = r.json()
             ds = data.get("deepseek", {})
@@ -238,4 +230,14 @@ def _check_deepseek(client: OpenTracyClient, agent_id: str) -> bool:
                 return True
     except Exception:
         pass
+    # Fallback: .env
+    env_path = os.path.join(OPENTRACY_ROOT, ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path) as f:
+                for line in f:
+                    if line.startswith("DEEPSEEK_API_KEY") and "=" in line:
+                        return True
+        except Exception:
+            pass
     return False
