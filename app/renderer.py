@@ -87,6 +87,7 @@ def print_help() -> None:
         ("/listar", "Lista sessoes anteriores"),
         ("/carregar <id>", "Carrega sessao anterior"),
         ("/status", "Mostra status do OpenTracy e token"),
+        ("/indexar", "Converte documentos e ingere no CorpusStore"),
     ]
 
     for cmd, desc in commands:

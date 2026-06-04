@@ -5,6 +5,7 @@ Eventos registrados:
   - error: erros HTTP, de configuracao, etc.
   - tool_error: erros de MCP tools (code, recoverable)
   - memory_summary: resumo de sessao gerado
+  - event: eventos genericos (indexar, etc.)
 """
 
 from __future__ import annotations
@@ -128,6 +129,16 @@ class JsonlLogger:
             session_id=session_id,
             summary_chars=summary_chars,
         )
+
+    def log_event(
+        self,
+        event: str,
+        *,
+        session_id: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Loga um evento generico com metadados."""
+        self.log(event, session_id=session_id, **(metadata or {}))
 
     # ------------------------------------------------------------------
     # Rotacao

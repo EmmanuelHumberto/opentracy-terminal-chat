@@ -6,6 +6,7 @@ renderizacao e logs.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Optional
 
 from app.command_router import CommandRouter
@@ -22,11 +23,16 @@ from app.renderer import (
     print_memory_status,
     print_session_list,
     print_status,
+    print_success,
     print_trace_id,
     print_welcome,
     clear_screen,
     prompt_input,
 )
+
+
+# Caminho absoluto do OpenTracy (usado pelo /indexar)
+OPENTRACY_ROOT = Path("/home/hiatus/Projetos/ligadotattoo/OpenTracy")
 
 
 class ChatContext:
@@ -48,6 +54,7 @@ class ChatContext:
         self.router = router
         self.auth_token = auth_token
         self.last_trace_id: Optional[str] = None
+        self.base_dir: Path = Path(__file__).resolve().parent.parent
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +173,124 @@ def _cmd_status(*, ctx: ChatContext, **_: Any) -> bool:
     return True
 
 
+def _cmd_indexar(*, ctx: ChatContext, **_: Any) -> bool:
+    """Converte documentos em knowledge/ para Markdown e ingere no CorpusStore."""
+    source_dir = ctx.base_dir / ctx.config.knowledge.source_dir
+    output_dir = ctx.base_dir / ctx.config.knowledge.output_dir
+
+    if not source_dir.is_dir():
+        print_error(f"Diretorio de origem nao encontrado: {source_dir}")
+        print_info("Crie a pasta knowledge/ e adicione arquivos .md, .txt, .pdf, .docx ou .xlsx.")
+        return True
+
+    # --- 1. Converter documentos ---
+    print_info(f"Convertendo documentos de {source_dir}...")
+    try:
+        from ligadoai_tools.document_server import convert_directory
+        conv_result = convert_directory(
+            source_dir,
+            output_dir,
+            recursive=True,
+        )
+    except Exception as exc:
+        print_error(f"Erro na conversao: {exc}")
+        return True
+
+    if conv_result.get("errors", 0) > 0:
+        for err in conv_result.get("error_details", []):
+            msg = err.get("error", {}).get("message", "desconhecido")
+            print_error(f"  Erro: {msg}")
+
+    if conv_result.get("partials", 0) > 0:
+        for p in conv_result.get("partial_details", []):
+            detail = p.get("partial", {}).get("detail", "")
+            if detail:
+                print_info(f"  Aviso: {detail}")
+
+    converted = conv_result.get("converted", 0)
+    errors = conv_result.get("errors", 0)
+    partials = conv_result.get("partials", 0)
+
+    print_info(
+        f"Convertidos: {converted} arquivos, "
+        f"{errors} erros, "
+        f"{partials} avisos de falha parcial."
+    )
+
+    if converted == 0:
+        print_error("Nenhum arquivo foi convertido.")
+        return True
+
+    # --- 2. Ingerir no CorpusStore ---
+    print_info("Ingerindo no CorpusStore do OpenTracy...")
+    try:
+        import subprocess
+        import sys
+
+        chunk_size = ctx.config.knowledge.chunk_size
+        overlap = ctx.config.knowledge.overlap
+        ingest_target = ctx.config.knowledge.ingest_target
+
+        # Usa o Python do venv do OpenTracy (onde numpy esta instalado)
+        opentracy_python = str(OPENTRACY_ROOT / ".venv" / "bin" / "python3")
+        if not Path(opentracy_python).is_file():
+            opentracy_python = str(OPENTRACY_ROOT / ".venv" / "bin" / "python")
+        if not Path(opentracy_python).is_file():
+            opentracy_python = "python3"  # fallback
+
+        cmd = [
+            opentracy_python, "-m", "corpora.ingest",
+            str(output_dir),
+            "--chunk-size", str(chunk_size),
+            "--overlap", str(overlap),
+        ]
+
+        if ingest_target:
+            cmd.extend(["--root", ingest_target])
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(OPENTRACY_ROOT),
+        )
+
+        if result.returncode == 0:
+            print_success(f"Ingest concluido: {result.stdout.strip()}")
+        else:
+            print_error(f"Falha no ingest: {result.stderr[:500]}")
+            return True
+
+    except FileNotFoundError:
+        print_error(
+            "Comando corpora.ingest nao encontrado. "
+            "Verifique se o OpenTracy esta instalado em /home/hiatus/Projetos/ligadotattoo/OpenTracy"
+        )
+        return True
+    except subprocess.TimeoutExpired:
+        print_error("Timeout de 120s excedido durante ingest.")
+        return True
+    except Exception as exc:
+        print_error(f"Erro no ingest: {exc}")
+        return True
+
+    # --- 3. Log ---
+    ctx.logger.log_event(
+        event="indexar",
+        session_id=ctx.sessions.current_id,
+        metadata={
+            "converted": converted,
+            "errors": errors,
+            "partials": partials,
+            "total_chars": conv_result.get("total_chars", 0),
+        },
+    )
+
+    print_success("Base de conhecimento indexada com sucesso!")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Registro de comandos
 # ---------------------------------------------------------------------------
@@ -182,6 +307,7 @@ def build_router() -> CommandRouter:
     router.register("listar", _cmd_listar, "Lista sessoes anteriores")
     router.register("carregar", _cmd_carregar, "Carrega sessao anterior")
     router.register("status", _cmd_status, "Mostra status do OpenTracy")
+    router.register("indexar", _cmd_indexar, "Converte documentos e ingere no CorpusStore")
     return router
 
 
@@ -228,14 +354,21 @@ def run_chat_loop(ctx: ChatContext) -> None:
             summary = session.load_summary()
             recent = session.get_recent(ctx.config.memory.max_history)
 
-        # Monta request enriquecido
+        # Monta request enriquecido com contexto para o modelo
+        # Envia a pergunta PURA do usuario como 'request' para o retrieve funcionar
+        # O contexto (resumo + historico) vai como parte do request enriquecido
         enriched = _build_enriched_request(
             summary=summary, recent=recent, user_message=user_input,
         )
         history = [{"role": m["role"], "content": m["content"]} for m in recent]
 
         try:
-            result = ctx.client.chat(enriched, history=history, auth_token=ctx.auth_token)
+            # Envia a pergunta pura como request (para retrieve) e o contexto enriquecido
+            result = ctx.client.chat(
+                request=user_input,  # pergunta pura para o retrieve
+                history=history,
+                auth_token=ctx.auth_token,
+            )
         except OpenTracyError as exc:
             print_error(str(exc))
             ctx.logger.log_error(
@@ -264,7 +397,7 @@ def run_chat_loop(ctx: ChatContext) -> None:
             trace_id=trace_id,
             success=success,
             duration_ms=duration_ms,
-            input_chars=len(enriched),
+            input_chars=len(user_input),
             output_chars=len(response),
         )
         print_divider()

@@ -1,20 +1,20 @@
 [project]
 name = "ligadoai-terminal-chat"
-version = "0.1.0"
+version = "0.3.0"
 description = "CLI terminal chat for OpenTracy + DeepSeek"
 requires-python = ">=3.11"
 dependencies = [
     "rich>=13.0",
     "httpx>=0.27",
     "pydantic>=2.0",
-]
-
-[project.optional-dependencies]
-docs = [
     "pymupdf>=1.23",
     "python-docx>=1.1",
     "openpyxl>=3.1",
+    "pytesseract>=0.3",
+    "Pillow>=10.0",
 ]
+
+[project.optional-dependencies]
 mcp = [
     "mcp>=1.0",
 ]
