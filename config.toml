@@ -1,0 +1,47 @@
+[opentracy]
+backend_url = "http://localhost:8002"
+runtime_url = "http://localhost:8001"
+agent_id = "ligadoai-terminal"
+timeout = 30
+
+[auth]
+api_token_file = "~/.ligadoai/api_token"
+
+[model]
+provider = "deepseek"
+small = "deepseek-chat"
+big = "deepseek-reasoner"
+temperature = 0.3
+max_tokens = 2048
+
+[memory]
+max_history = 10
+max_tokens_before_summary = 4000
+summary_max_chars = 2500
+flatten_history_into_request = true
+
+[security]
+allowed_read_dirs = ["~/LigadoAI"]
+allowed_write_dirs = []
+max_file_size = 10485760
+max_tool_output_bytes = 65536
+block_secrets = true
+
+[mcp]
+tool_timeout_seconds = 30
+max_restarts_per_server = 3
+restart_backoff_seconds = 5
+log_tool_errors = true
+
+[knowledge]
+source_dir = "knowledge"
+output_dir = "knowledge_md"
+chunk_size = 512
+overlap = 50
+ingest_target = "../OpenTracy/corpora/indexed"
+
+[ui]
+theme = "dark"
+show_timestamp = true
+show_trace_id = true
+show_cost = false

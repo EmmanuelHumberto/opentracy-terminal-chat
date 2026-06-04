@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+uv.lock
+
+# Dados locais
+conversations/
+memory/
+logs/
+knowledge_md/
+cache/
+
+# Token
+.ligadoai/
+
+# Scripts temporarios de setup
+run_git.py
+run_git.sh
+run_checks.py
+run_tests.py
+check_imports.py
+
+# Backups
+*.backup
+
+# MVP antigo
+tracy_chat.py
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,52 @@
+hiatus@debHiatus:~/Projetos/ligadotattoo/opentracy-terminal-chat$ cd /home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat
+uv run python -m app.main --mock
+
+Modo MOCK - sem conexao com OpenTracy.
+
+╭─────────────────────────────────────────────────────╮
+│ LigadoAI Terminal Chat                              │
+│ Agente: ligadoai-terminal  |  Sessao: default       │
+│                                                     │
+│ Digite /ajuda para comandos ou /sair para encerrar. │
+╰─────────────────────────────────────────────────────╯
+
+> : ola
+
+Voce:
+ola
+
+Assistente:
+[mock] Recebi: Voce esta em uma conversa tecnica continua.                                                                                            
+
+Use o resumo e as ultimas mensagens apenas como context...                                                                                            
+
+trace: mock_trace_001
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> : /ajuda
+
+                         Comandos                          
+ /ajuda              Mostra esta ajuda                     
+ /sair               Encerra o programa                    
+ /limpar             Limpa a tela                          
+ /resumo             Forca atualizacao do resumo da sessao 
+ /memoria            Mostra status da memoria local        
+ /novo               Inicia nova sessao de conversa        
+ /listar             Lista sessoes anteriores              
+ /carregar <id>      Carrega sessao anterior               
+ /status             Mostra status do OpenTracy e token    
+
+> : sair
+
+Voce:
+sair
+
+Assistente:
+[mock] Recebi: Voce esta em uma conversa tecnica continua.                                                                                            
+
+Use o resumo e as ultimas mensagens apenas como context...                                                                                            
+
+trace: mock_trace_001
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> : /sair
+hiatus@debHiatus:~/Projetos/ligadotattoo/opentracy-terminal-chat$ 
+

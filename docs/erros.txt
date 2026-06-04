@@ -1,0 +1,19 @@
+hiatus@debHiatus:~/Projetos/ligadotattoo/OpenTracy$ cd /home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat
+uv run python -m app.main --mock
+      Built ligadoai-terminal-chat @ file:///home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat
+Installed 12 packages in 9ms
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/app/main.py", line 14, in <module>
+    from app.bootstrap import validate
+  File "/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/app/bootstrap.py", line 15, in <module>
+    from app.opentracy_client import OpenTracyClient, OpenTracyError
+  File "/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/app/opentracy_client.py", line 21, in <module>
+    class OpenTracyClient:
+    ...<155 lines>...
+            self._client.close()
+  File "/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/app/opentracy_client.py", line 148, in OpenTracyClient
+    Internals
+NameError: name 'Internals' is not defined
+
