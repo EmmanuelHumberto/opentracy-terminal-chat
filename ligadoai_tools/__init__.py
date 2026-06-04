@@ -1,0 +1,1 @@
+# LigadoAI MCP Tools

@@ -3,6 +3,7 @@
 Fase 1: apenas valida se agente e token existem.
 Fase 2: cria/ativa agente, conecta canal API, salva token, valida DeepSeek,
         ajusta rota para DeepSeek se necessario.
+Fase 3: registra MCP servers (filesystem, search) no agente.
 """
 
 from __future__ import annotations
@@ -15,13 +16,11 @@ from app.config import Config
 from app.opentracy_client import OpenTracyClient, OpenTracyError
 
 
-# Caminho base do OpenTracy
 OPENTRACY_ROOT = "/home/hiatus/Projetos/ligadotattoo/OpenTracy"
+TERMINAL_ROOT = "/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat"
 
 
 class BootstrapResult:
-    """Resultado do bootstrap."""
-
     def __init__(
         self,
         success: bool,
@@ -30,6 +29,7 @@ class BootstrapResult:
         agent_created: bool = False,
         token_created: bool = False,
         route_updated: bool = False,
+        mcp_registered: bool = False,
     ) -> None:
         self.success = success
         self.auth_token = auth_token
@@ -37,10 +37,10 @@ class BootstrapResult:
         self.agent_created = agent_created
         self.token_created = token_created
         self.route_updated = route_updated
+        self.mcp_registered = mcp_registered
 
 
 def run(config: Config) -> BootstrapResult:
-    """Executa bootstrap completo."""
     client = OpenTracyClient(
         backend_url=config.opentracy.backend_url,
         runtime_url=config.opentracy.runtime_url,
@@ -52,18 +52,13 @@ def run(config: Config) -> BootstrapResult:
     agent_created = False
     token_created = False
     route_updated = False
+    mcp_registered = False
 
     # --- 1. Health check ---
     if not client.check_backend_health():
-        return BootstrapResult(
-            success=False,
-            error=f"Backend {config.opentracy.backend_url} nao respondeu.\nExecute 'make up' no OpenTracy.",
-        )
+        return BootstrapResult(success=False, error=f"Backend {config.opentracy.backend_url} nao respondeu.\nExecute 'make up' no OpenTracy.")
     if not client.check_runtime_health():
-        return BootstrapResult(
-            success=False,
-            error=f"Runtime {config.opentracy.runtime_url} nao respondeu.\nExecute 'make up' no OpenTracy.",
-        )
+        return BootstrapResult(success=False, error=f"Runtime {config.opentracy.runtime_url} nao respondeu.\nExecute 'make up' no OpenTracy.")
 
     # --- 2. Lista agentes ---
     try:
@@ -80,25 +75,25 @@ def run(config: Config) -> BootstrapResult:
         except OpenTracyError as exc:
             return BootstrapResult(success=False, error=f"Erro ao criar agente '{agent_id}': {exc}")
 
-    # --- 4. Ativar agente via API ---
+    # --- 4. Ativar agente ---
     try:
         _activate_agent(client, agent_id)
     except OpenTracyError as exc:
         return BootstrapResult(success=False, error=f"Erro ao ativar agente '{agent_id}': {exc}")
 
-    # --- 5. Ajustar rota para DeepSeek (tanto em agents/<id>/ quanto em agent/) ---
+    # --- 5. Ajustar rota DeepSeek ---
     try:
         route_updated = _ensure_deepseek_route(agent_id, config)
     except Exception as exc:
         return BootstrapResult(success=False, error=f"Erro ao ajustar rota DeepSeek: {exc}")
 
-    # --- 6. Conectar ou rotacionar canal API ---
+    # --- 6. Conectar canal API ---
     try:
         token = _ensure_api_channel(client, agent_id)
     except OpenTracyError as exc:
         return BootstrapResult(success=False, error=f"Erro ao conectar canal API: {exc}")
 
-    # --- 7. Salvar token localmente ---
+    # --- 7. Salvar token ---
     try:
         save_token(token, config.auth.api_token_file)
         token_created = True
@@ -108,10 +103,13 @@ def run(config: Config) -> BootstrapResult:
     # --- 8. Verificar DeepSeek ---
     deepseek_ok = _check_deepseek(client, agent_id)
     if not deepseek_ok:
-        return BootstrapResult(
-            success=False,
-            error="DeepSeek nao configurado. Adicione DEEPSEEK_API_KEY no .env do OpenTracy.",
-        )
+        return BootstrapResult(success=False, error="DeepSeek nao configurado. Adicione DEEPSEEK_API_KEY no .env do OpenTracy.")
+
+    # --- 9. Registrar MCP servers (Fase 3) ---
+    try:
+        mcp_registered = _register_mcp_servers(agent_id, config)
+    except Exception as exc:
+        return BootstrapResult(success=False, error=f"Erro ao registrar MCP servers: {exc}")
 
     auth_token = load_token(config.auth.api_token_file)
     return BootstrapResult(
@@ -120,11 +118,12 @@ def run(config: Config) -> BootstrapResult:
         agent_created=agent_created,
         token_created=token_created,
         route_updated=route_updated,
+        mcp_registered=mcp_registered,
     )
 
 
 # ---------------------------------------------------------------------------
-# Funcoes auxiliares
+# Agente
 # ---------------------------------------------------------------------------
 
 
@@ -133,7 +132,7 @@ def _create_agent(client: OpenTracyClient, agent_id: str) -> None:
     payload = {
         "name": agent_id,
         "model": "deepseek-chat",
-        "prompt": "Voce e um assistente tecnico da Ligado IoT para manutencao, diagnostico, documentacao e analise industrial. Responda em portugues, seja objetivo e cite limites quando nao tiver dados suficientes.",
+        "prompt": "Voce e um assistente tecnico da Ligado IoT. Responda em portugues, seja objetivo.",
         "tools": [],
         "channels": ["api"],
     }
@@ -155,42 +154,41 @@ def _activate_agent(client: OpenTracyClient, agent_id: str) -> None:
         raise OpenTracyError(f"Falha ao ativar agente: {exc}") from exc
 
 
+# ---------------------------------------------------------------------------
+# Rota DeepSeek
+# ---------------------------------------------------------------------------
+
+
 def _ensure_deepseek_route(agent_id: str, config: Config) -> bool:
-    """Ajusta a rota para DeepSeek nos dois diretorios: agents/<id>/ e agent/."""
     small = config.model.small
     big = config.model.big
     updated = False
-
-    # Diretorios onde o route.yaml pode estar
     candidates = [
         os.path.join(OPENTRACY_ROOT, "agents", agent_id, "pipeline", "route.yaml"),
         os.path.join(OPENTRACY_ROOT, "agent", "pipeline", "route.yaml"),
     ]
-
     for route_path in candidates:
         if not os.path.exists(route_path):
             continue
-
         try:
             with open(route_path) as f:
                 content = f.read()
-
             if "deepseek" in content:
-                continue  # ja atualizado
-
-            # Substitui modelos Claude por DeepSeek
+                continue
             content = content.replace("claude-opus-4-7", small)
             content = content.replace("claude-sonnet-4-6", big)
             content = content.replace("claude-haiku-4-5", small)
-
             with open(route_path, 'w') as f:
                 f.write(content)
-
             updated = True
         except Exception:
             pass
-
     return updated
+
+
+# ---------------------------------------------------------------------------
+# Canal API
+# ---------------------------------------------------------------------------
 
 
 def _ensure_api_channel(client: OpenTracyClient, agent_id: str) -> str:
@@ -204,7 +202,6 @@ def _ensure_api_channel(client: OpenTracyClient, agent_id: str) -> str:
                 return token
     except httpx.RequestError as exc:
         raise OpenTracyError(f"Falha ao conectar canal API: {exc}") from exc
-
     if r.status_code == 409:
         try:
             r = httpx.post(f"{client.backend_url}/v1/agents/{agent_id}/channels/api/rotate", timeout=30)
@@ -215,8 +212,12 @@ def _ensure_api_channel(client: OpenTracyClient, agent_id: str) -> str:
                     return token
         except httpx.RequestError as exc:
             raise OpenTracyError(f"Falha ao rotacionar token: {exc}") from exc
-
     raise OpenTracyError(f"HTTP {r.status_code} ao configurar canal API: {r.text[:200]}")
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek check
+# ---------------------------------------------------------------------------
 
 
 def _check_deepseek(client: OpenTracyClient, agent_id: str) -> bool:
@@ -230,7 +231,6 @@ def _check_deepseek(client: OpenTracyClient, agent_id: str) -> bool:
                 return True
     except Exception:
         pass
-    # Fallback: .env
     env_path = os.path.join(OPENTRACY_ROOT, ".env")
     if os.path.exists(env_path):
         try:
@@ -241,3 +241,74 @@ def _check_deepseek(client: OpenTracyClient, agent_id: str) -> bool:
         except Exception:
             pass
     return False
+
+
+# ---------------------------------------------------------------------------
+# MCP Servers (Fase 3)
+# ---------------------------------------------------------------------------
+
+
+def _register_mcp_servers(agent_id: str, config: Config) -> bool:
+    """Registra os servidores MCP no formato que o runtime espera.
+
+    O runtime (runtime/agents/mcp.py) espera o formato:
+    {
+      "servers": [
+        {"name": "...", "transport": "stdio", "command": "...", ...}
+      ]
+    }
+    """
+    import json
+
+    allowed_dirs = ":".join(config.security.allowed_read_dirs)
+    max_file_size = str(config.security.max_file_size)
+    max_output = str(config.security.max_tool_output_bytes)
+
+    servers = [
+        {
+            "name": "ligadoai_fs",
+            "transport": "stdio",
+            "command": "uv",
+            "args": ["run", "python", "-m", "ligadoai_tools.filesystem_server"],
+            "env": {
+                "LIGADOAI_ALLOWED_READ_DIRS": allowed_dirs,
+                "LIGADOAI_MAX_FILE_SIZE": max_file_size,
+                "LIGADOAI_MAX_OUTPUT_BYTES": max_output,
+            },
+            "enabled": True,
+            "description": "Ferramentas read-only para arquivos autorizados e data/hora.",
+        },
+        {
+            "name": "ligadoai_search",
+            "transport": "stdio",
+            "command": "uv",
+            "args": ["run", "python", "-m", "ligadoai_tools.search_server"],
+            "env": {
+                "LIGADOAI_ALLOWED_READ_DIRS": allowed_dirs,
+                "LIGADOAI_MAX_OUTPUT_BYTES": max_output,
+                "LIGADOAI_MAX_SEARCH_RESULTS": "50",
+            },
+            "enabled": True,
+            "description": "Ferramentas de busca em arquivos (search_files, grep).",
+        },
+    ]
+
+    mcp_config = {"servers": servers}
+    registered = False
+
+    # Escreve em ambos: agents/<id>/mcp.json e agent/mcp.json
+    candidates = [
+        os.path.join(OPENTRACY_ROOT, "agents", agent_id, "mcp.json"),
+        os.path.join(OPENTRACY_ROOT, "agent", "mcp.json"),
+    ]
+
+    for mcp_path in candidates:
+        try:
+            os.makedirs(os.path.dirname(mcp_path), exist_ok=True)
+            with open(mcp_path, 'w') as f:
+                json.dump(mcp_config, f, indent=2)
+            registered = True
+        except Exception:
+            pass
+
+    return registered

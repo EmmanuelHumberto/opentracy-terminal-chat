@@ -70,7 +70,6 @@ def _cmd_limpar(*, ctx: ChatContext, **_: Any) -> bool:
 
 
 def _cmd_resumo(*, ctx: ChatContext, **_: Any) -> bool:
-    """Forca a geracao de resumo."""
     session = ctx.sessions.current
     messages = session.get_all()
     if not messages:
@@ -91,7 +90,6 @@ def _cmd_resumo(*, ctx: ChatContext, **_: Any) -> bool:
     prompt_parts.append("\nResumo atualizado:")
 
     summary_prompt = "\n".join(prompt_parts)
-
     print_info("Gerando resumo...")
 
     try:
@@ -102,16 +100,10 @@ def _cmd_resumo(*, ctx: ChatContext, **_: Any) -> bool:
 
     summary = (result.get("response") or "").strip()
     if summary:
-        session.save_summary(summary)
-        session.trim_history_after_summary(keep_last=2)
-        ctx.logger.log_memory_summary(
-            session_id=ctx.sessions.current_id,
-            summary_chars=len(summary),
-        )
-        print_info("Resumo atualizado. Historico antigo compactado.")
+        _apply_summary(ctx, session, summary)
+        print_info("Resumo atualizado. Historico compactado.")
     else:
         print_error("Resumo veio vazio.")
-
     return True
 
 
@@ -119,7 +111,6 @@ def _cmd_memoria(*, ctx: ChatContext, **_: Any) -> bool:
     session = ctx.sessions.current
     messages = session.get_all()
     summary = session.load_summary()
-
     print_memory_status(
         session_id=ctx.sessions.current_id,
         message_count=len(messages),
@@ -201,13 +192,11 @@ def build_router() -> CommandRouter:
 
 def run_chat_loop(ctx: ChatContext) -> None:
     """Loop principal: le input, roteia comando ou envia para LLM."""
-
     session = ctx.sessions.current
     print_welcome(ctx.config.opentracy.agent_id, session.session_id)
 
     while True:
         user_input = prompt_input()
-
         if not user_input:
             continue
 
@@ -223,21 +212,26 @@ def run_chat_loop(ctx: ChatContext) -> None:
         summary = session.load_summary()
         recent = session.get_recent(ctx.config.memory.max_history)
 
-        # Verifica se precisa resumir
+        # Verifica se precisa resumir: por tamanho OU por numero de mensagens
         estimated = session.estimated_context_chars(summary, recent, user_input)
-        if estimated > ctx.config.memory.max_chars_before_summary:
-            print_info(f"Contexto grande ({estimated} chars). Resumindo automaticamente...")
+        msg_count = session.count_messages_since_summary()
+        needs_summary = (
+            estimated > ctx.config.memory.max_chars_before_summary
+            or msg_count > ctx.config.memory.max_history * 2
+        )
+
+        if needs_summary:
+            print_info(
+                f"Resumindo sessao ({msg_count} mensagens, ~{estimated} chars)..."
+            )
             _auto_summarize(ctx, session, summary, recent)
             summary = session.load_summary()
             recent = session.get_recent(ctx.config.memory.max_history)
 
         # Monta request enriquecido
         enriched = _build_enriched_request(
-            summary=summary,
-            recent=recent,
-            user_message=user_input,
+            summary=summary, recent=recent, user_message=user_input,
         )
-
         history = [{"role": m["role"], "content": m["content"]} for m in recent]
 
         try:
@@ -256,7 +250,6 @@ def run_chat_loop(ctx: ChatContext) -> None:
         duration_ms = result.get("duration_ms", 0)
         success = result.get("success", False)
         error = result.get("error")
-
         ctx.last_trace_id = trace_id
 
         if success:
@@ -274,7 +267,6 @@ def run_chat_loop(ctx: ChatContext) -> None:
             input_chars=len(enriched),
             output_chars=len(response),
         )
-
         print_divider()
 
 
@@ -316,7 +308,7 @@ def _auto_summarize(
     summary: Optional[str],
     recent: list[dict[str, Any]],
 ) -> None:
-    """Gera resumo e limpa historico antigo para evitar acumulo."""
+    """Gera resumo e compacta historico."""
     prompt_parts = [
         "Voce resume conversas tecnicas em portugues.",
         "Mantenha assunto principal, decisoes, dados tecnicos, pendencias e proximos passos.",
@@ -326,19 +318,23 @@ def _auto_summarize(
         prompt_parts.append(f"\nResumo anterior:\n{summary}")
     prompt_parts.append(f"\nNovas mensagens:\n{_format_messages(recent)}")
     prompt_parts.append("\nResumo atualizado:")
-
     summary_prompt = "\n".join(prompt_parts)
 
     try:
         result = ctx.client.chat(summary_prompt, auth_token=ctx.auth_token)
         new_summary = (result.get("response") or "").strip()
         if new_summary:
-            session.save_summary(new_summary)
-            # Limpa historico, mantendo apenas as ultimas 2 mensagens
-            session.trim_history_after_summary(keep_last=2)
-            ctx.logger.log_memory_summary(
-                session_id=ctx.sessions.current_id,
-                summary_chars=len(new_summary),
-            )
+            _apply_summary(ctx, session, new_summary)
     except OpenTracyError:
         pass
+
+
+def _apply_summary(ctx: ChatContext, session: Any, summary: str) -> None:
+    """Aplica o resumo: salva e limpa historico antigo."""
+    session.save_summary(summary)
+    # Remove mensagens antigas, mantendo apenas as 2 ultimas
+    session.trim_history_after_summary(keep_last=2)
+    ctx.logger.log_memory_summary(
+        session_id=ctx.sessions.current_id,
+        summary_chars=len(summary),
+    )
