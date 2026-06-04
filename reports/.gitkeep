@@ -1,0 +1,4 @@
+# Relatorios gerados pelo agente.
+
+Esta pasta e o destino padrao para arquivos criados pela tool write_file.
+Os relatorios sao salvos em Markdown e podem conter textos, tabelas e dados estruturados.

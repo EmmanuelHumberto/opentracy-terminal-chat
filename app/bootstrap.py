@@ -4,6 +4,7 @@ Fase 1: apenas valida se agente e token existem.
 Fase 2: cria/ativa agente, conecta canal API, salva token, valida DeepSeek,
         ajusta rota para DeepSeek se necessario.
 Fase 3: registra MCP servers (filesystem, search) no agente.
+Fase 5: registra diretorios de escrita para write_file.
 """
 
 from __future__ import annotations
@@ -105,7 +106,7 @@ def run(config: Config) -> BootstrapResult:
     if not deepseek_ok:
         return BootstrapResult(success=False, error="DeepSeek nao configurado. Adicione DEEPSEEK_API_KEY no .env do OpenTracy.")
 
-    # --- 9. Registrar MCP servers (Fase 3) ---
+    # --- 9. Registrar MCP servers (Fase 3 + Fase 5) ---
     try:
         mcp_registered = _register_mcp_servers(agent_id, config)
     except Exception as exc:
@@ -244,23 +245,19 @@ def _check_deepseek(client: OpenTracyClient, agent_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# MCP Servers (Fase 3)
+# MCP Servers (Fase 3 + Fase 5)
 # ---------------------------------------------------------------------------
 
 
 def _register_mcp_servers(agent_id: str, config: Config) -> bool:
     """Registra os servidores MCP no formato que o runtime espera.
 
-    O runtime (runtime/agents/mcp.py) espera o formato:
-    {
-      "servers": [
-        {"name": "...", "transport": "stdio", "command": "...", ...}
-      ]
-    }
+    Inclui diretorios de leitura e escrita (Fase 5).
     """
     import json
 
     allowed_dirs = ":".join(config.security.allowed_read_dirs)
+    allowed_write = ":".join(config.security.allowed_write_dirs) if config.security.allowed_write_dirs else allowed_dirs
     max_file_size = str(config.security.max_file_size)
     max_output = str(config.security.max_tool_output_bytes)
 
@@ -272,11 +269,12 @@ def _register_mcp_servers(agent_id: str, config: Config) -> bool:
             "args": ["run", "python", "-m", "ligadoai_tools.filesystem_server"],
             "env": {
                 "LIGADOAI_ALLOWED_READ_DIRS": allowed_dirs,
+                "LIGADOAI_ALLOWED_WRITE_DIRS": allowed_write,
                 "LIGADOAI_MAX_FILE_SIZE": max_file_size,
                 "LIGADOAI_MAX_OUTPUT_BYTES": max_output,
             },
             "enabled": True,
-            "description": "Ferramentas read-only para arquivos autorizados e data/hora.",
+            "description": "Ferramentas de leitura e escrita em arquivos autorizados.",
         },
         {
             "name": "ligadoai_search",
@@ -296,7 +294,6 @@ def _register_mcp_servers(agent_id: str, config: Config) -> bool:
     mcp_config = {"servers": servers}
     registered = False
 
-    # Escreve em ambos: agents/<id>/mcp.json e agent/mcp.json
     candidates = [
         os.path.join(OPENTRACY_ROOT, "agents", agent_id, "mcp.json"),
         os.path.join(OPENTRACY_ROOT, "agent", "mcp.json"),
