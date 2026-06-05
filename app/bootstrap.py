@@ -17,10 +17,6 @@ from app.config import Config
 from app.opentracy_client import OpenTracyClient, OpenTracyError
 
 
-OPENTRACY_ROOT = "/home/hiatus/Projetos/ligadotattoo/OpenTracy"
-TERMINAL_ROOT = "/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat"
-
-
 class BootstrapResult:
     def __init__(
         self,
@@ -102,7 +98,7 @@ def run(config: Config) -> BootstrapResult:
         return BootstrapResult(success=False, error=f"Erro ao salvar token: {exc}")
 
     # --- 8. Verificar DeepSeek ---
-    deepseek_ok = _check_deepseek(client, agent_id)
+    deepseek_ok = _check_deepseek(config)
     if not deepseek_ok:
         return BootstrapResult(success=False, error="DeepSeek nao configurado. Adicione DEEPSEEK_API_KEY no .env do OpenTracy.")
 
@@ -164,9 +160,10 @@ def _ensure_deepseek_route(agent_id: str, config: Config) -> bool:
     small = config.model.small
     big = config.model.big
     updated = False
+    opentracy_root = str(config.paths.opentracy_path)
     candidates = [
-        os.path.join(OPENTRACY_ROOT, "agents", agent_id, "pipeline", "route.yaml"),
-        os.path.join(OPENTRACY_ROOT, "agent", "pipeline", "route.yaml"),
+        os.path.join(opentracy_root, "agents", agent_id, "pipeline", "route.yaml"),
+        os.path.join(opentracy_root, "agent", "pipeline", "route.yaml"),
     ]
     for route_path in candidates:
         if not os.path.exists(route_path):
@@ -221,18 +218,10 @@ def _ensure_api_channel(client: OpenTracyClient, agent_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _check_deepseek(client: OpenTracyClient, agent_id: str) -> bool:
-    import httpx
-    try:
-        r = httpx.get(f"{client.runtime_url}/agents/{agent_id}/secrets", timeout=10)
-        if r.is_success:
-            data = r.json()
-            ds = data.get("deepseek", {})
-            if ds.get("set"):
-                return True
-    except Exception:
-        pass
-    env_path = os.path.join(OPENTRACY_ROOT, ".env")
+def _check_deepseek(config: Config) -> bool:
+    """Verifica se a chave DeepSeek esta configurada no .env do OpenTracy."""
+    opentracy_root = config.paths.opentracy_path
+    env_path = os.path.join(str(opentracy_root), ".env")
     if os.path.exists(env_path):
         try:
             with open(env_path) as f:
@@ -293,10 +282,11 @@ def _register_mcp_servers(agent_id: str, config: Config) -> bool:
 
     mcp_config = {"servers": servers}
     registered = False
+    opentracy_root = str(config.paths.opentracy_path)
 
     candidates = [
-        os.path.join(OPENTRACY_ROOT, "agents", agent_id, "mcp.json"),
-        os.path.join(OPENTRACY_ROOT, "agent", "mcp.json"),
+        os.path.join(opentracy_root, "agents", agent_id, "mcp.json"),
+        os.path.join(opentracy_root, "agent", "mcp.json"),
     ]
 
     for mcp_path in candidates:

@@ -89,6 +89,25 @@ class OpenTracyClient:
         return r.json()
 
     # ------------------------------------------------------------------
+    # MCP Tools
+    # ------------------------------------------------------------------
+
+    def list_tools(self, auth_token: str) -> list[dict[str, Any]]:
+        """Lista MCP tools registradas no agente.
+
+        Usa o mesmo tratamento de erros padrao do cliente (401, 429, 502, etc).
+        """
+        r = self._get(
+            f"{self.backend_url}/v1/agents/{self.agent_id}/mcp/tools",
+            auth_token,
+        )
+        if r.status_code == 404:
+            return []
+        _raise_for_status(r)
+        data = r.json()
+        return data if isinstance(data, list) else data.get("tools", [])
+
+    # ------------------------------------------------------------------
     # Chat
     # ------------------------------------------------------------------
 

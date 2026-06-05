@@ -16,7 +16,7 @@ max_tokens = 2048
 
 [memory]
 max_history = 10
-max_tokens_before_summary = 4000
+max_chars_before_summary = 16000
 summary_max_chars = 2500
 flatten_history_into_request = true
 
@@ -51,3 +51,7 @@ theme = "dark"
 show_timestamp = true
 show_trace_id = true
 show_cost = false
+
+[paths]
+opentracy_root = "~/Projetos/ligadotattoo/OpenTracy"
+terminal_root = "~/Projetos/ligadotattoo/opentracy-terminal-chat"

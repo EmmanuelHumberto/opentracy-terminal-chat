@@ -31,10 +31,6 @@ from app.renderer import (
 )
 
 
-# Caminho absoluto do OpenTracy (usado pelo /indexar)
-OPENTRACY_ROOT = Path("/home/hiatus/Projetos/ligadotattoo/OpenTracy")
-
-
 class ChatContext:
     """Estado compartilhado entre o loop de chat e os comandos."""
 
@@ -213,13 +209,16 @@ def _cmd_indexar(*, ctx: ChatContext, **_: Any) -> bool:
     print_info("Ingerindo no CorpusStore do OpenTracy...")
     try:
         import subprocess, sys
+
         chunk_size = ctx.config.knowledge.chunk_size
         overlap = ctx.config.knowledge.overlap
         ingest_target = ctx.config.knowledge.ingest_target
 
-        opentracy_python = str(OPENTRACY_ROOT / ".venv" / "bin" / "python3")
+        # Usa caminho do config ao inves de hardcoded
+        opentracy_root = ctx.config.paths.opentracy_path
+        opentracy_python = str(opentracy_root / ".venv" / "bin" / "python3")
         if not Path(opentracy_python).is_file():
-            opentracy_python = str(OPENTRACY_ROOT / ".venv" / "bin" / "python")
+            opentracy_python = str(opentracy_root / ".venv" / "bin" / "python")
         if not Path(opentracy_python).is_file():
             opentracy_python = "python3"
 
@@ -227,7 +226,7 @@ def _cmd_indexar(*, ctx: ChatContext, **_: Any) -> bool:
         if ingest_target:
             cmd.extend(["--root", ingest_target])
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=str(OPENTRACY_ROOT))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=str(opentracy_root))
         if result.returncode == 0:
             print_success(f"Ingest concluido: {result.stdout.strip()}")
         else:
@@ -251,34 +250,26 @@ def _cmd_indexar(*, ctx: ChatContext, **_: Any) -> bool:
 def _cmd_tools(*, ctx: ChatContext, **_: Any) -> bool:
     """Lista as MCP tools registradas no agente."""
     try:
-        import httpx
-        r = httpx.get(
-            f"{ctx.config.opentracy.backend_url}/v1/agents/{ctx.config.opentracy.agent_id}/mcp/tools",
-            headers={"Authorization": f"Bearer {ctx.auth_token}"},
-            timeout=10,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            tools = data if isinstance(data, list) else data.get("tools", [])
-            if not tools:
-                print_info("Nenhuma MCP tool registrada.")
-                return True
-            from app.renderer import _console
-            from rich.table import Table
-            table = Table(title="MCP Tools", box=None, show_header=True)
-            table.add_column("Tool", style="bold cyan")
-            table.add_column("Descricao")
-            for t in tools:
-                # A API retorna "tool_name", "server_name" e "qualified_name"
-                name = t.get("tool_name") or t.get("name") or t.get("qualified_name", "?")
-                table.add_row(name, t.get("description", "-"))
-            _console.print()
-            _console.print(table)
-            _console.print()
-        else:
-            print_error(f"Falha ao listar tools (HTTP {r.status_code})")
-    except Exception as exc:
+        tools = ctx.client.list_tools(ctx.auth_token)
+    except OpenTracyError as exc:
         print_error(f"Erro ao consultar tools: {exc}")
+        return True
+
+    if not tools:
+        print_info("Nenhuma MCP tool registrada.")
+        return True
+
+    from app.renderer import _console
+    from rich.table import Table
+    table = Table(title="MCP Tools", box=None, show_header=True)
+    table.add_column("Tool", style="bold cyan")
+    table.add_column("Descricao")
+    for t in tools:
+        name = t.get("tool_name") or t.get("name") or t.get("qualified_name", "?")
+        table.add_row(name, t.get("description", "-"))
+    _console.print()
+    _console.print(table)
+    _console.print()
     return True
 
 
@@ -337,10 +328,20 @@ def run_chat_loop(ctx: ChatContext) -> None:
             summary = session.load_summary()
             recent = session.get_recent(ctx.config.memory.max_history)
 
-        history = [{"role": m["role"], "content": m["content"]} for m in recent]
+        # Decide se usa historico nativo do backend ou embute na request
+        if ctx.config.memory.flatten_history_into_request:
+            request_payload = _build_enriched_request(summary, recent, user_input)
+            history_payload = None
+        else:
+            request_payload = user_input
+            history_payload = [{"role": m["role"], "content": m["content"]} for m in recent]
 
         try:
-            result = ctx.client.chat(request=user_input, history=history, auth_token=ctx.auth_token)
+            result = ctx.client.chat(
+                request=request_payload,
+                history=history_payload,
+                auth_token=ctx.auth_token,
+            )
         except OpenTracyError as exc:
             print_error(str(exc))
             ctx.logger.log_error(kind=f"http_{exc.status_code}" if exc.status_code else "connection", message=str(exc), session_id=ctx.sessions.current_id)
@@ -370,7 +371,16 @@ def run_chat_loop(ctx: ChatContext) -> None:
 
 
 def _build_enriched_request(summary, recent, user_message):
-    parts = ["Voce esta em uma conversa tecnica continua.", "Use o resumo e as ultimas mensagens apenas como contexto.", "Responda a mensagem atual do usuario."]
+    """Constrói payload de mensagem com resumo e histórico embutidos.
+
+    Usado quando o backend nao processa o campo `history` nativamente
+    (config memory.flatten_history_into_request = true).
+    """
+    parts = [
+        "Voce esta em uma conversa tecnica continua.",
+        "Use o resumo e as ultimas mensagens apenas como contexto.",
+        "Responda a mensagem atual do usuario.",
+    ]
     if summary:
         parts.append(f"\nResumo da sessao:\n{summary}")
     if recent:
@@ -387,7 +397,11 @@ def _format_messages(messages):
 
 
 def _auto_summarize(ctx, session, summary, recent):
-    prompt_parts = ["Voce resume conversas tecnicas em portugues.", "Mantenha assunto principal, decisoes, dados tecnicos, pendencias e proximos passos.", f"Limite: {ctx.config.memory.summary_max_chars} caracteres, 3 paragrafos curtos."]
+    prompt_parts = [
+        "Voce resume conversas tecnicas em portugues.",
+        "Mantenha assunto principal, decisoes, dados tecnicos, pendencias e proximos passos.",
+        f"Limite: {ctx.config.memory.summary_max_chars} caracteres, 3 paragrafos curtos.",
+    ]
     if summary:
         prompt_parts.append(f"\nResumo anterior:\n{summary}")
     prompt_parts.append(f"\nNovas mensagens:\n{_format_messages(recent)}")

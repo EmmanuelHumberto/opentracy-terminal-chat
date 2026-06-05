@@ -57,14 +57,9 @@ class ModelConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     max_history: int = 10
-    max_tokens_before_summary: int = 4000
+    max_chars_before_summary: int = 16000  # caracteres totais (resumo + historico + input)
     summary_max_chars: int = 2500
     flatten_history_into_request: bool = True
-
-    @property
-    def max_chars_before_summary(self) -> int:
-        """Converte tokens para caracteres (4 chars / token, conservador)."""
-        return self.max_tokens_before_summary * 4
 
     @field_validator("max_history")
     @classmethod
@@ -107,6 +102,21 @@ class UiConfig(BaseModel):
     show_cost: bool = False
 
 
+class PathsConfig(BaseModel):
+    """Caminhos absolutos do projeto. Configuraveis via config.toml para portabilidade."""
+
+    opentracy_root: str = "~/OpenTracy"
+    terminal_root: str = "."
+
+    @property
+    def opentracy_path(self) -> Path:
+        return Path(os.path.expanduser(self.opentracy_root)).resolve()
+
+    @property
+    def terminal_path(self) -> Path:
+        return Path(os.path.expanduser(self.terminal_root)).resolve()
+
+
 class Config(BaseModel):
     opentracy: OpenTracyConfig = OpenTracyConfig()
     auth: AuthConfig = AuthConfig()
@@ -116,6 +126,7 @@ class Config(BaseModel):
     mcp: McpConfig = McpConfig()
     knowledge: KnowledgeConfig = KnowledgeConfig()
     ui: UiConfig = UiConfig()
+    paths: PathsConfig = PathsConfig()
 
 
 # ---------------------------------------------------------------------------

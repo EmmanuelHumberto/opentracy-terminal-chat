@@ -194,6 +194,9 @@ def tool_write_file(path: str, content: str, create_backup: bool = True) -> dict
       - Cria backup automatico se o arquivo ja existir
       - Nao permite escrever em arquivos de segredo
       - Limite de tamanho do conteudo
+
+    Retorna:
+      - "action": "created" se o arquivo foi criado, "updated" se foi sobrescrito.
     """
     from ligadoai_tools.safety import is_secret_file
 
@@ -211,8 +214,11 @@ def tool_write_file(path: str, content: str, create_backup: bool = True) -> dict
     if resolved.is_dir():
         return error_response("path_not_allowed", detail=f"Nao e possivel sobrescrever um diretorio: {path}")
 
-    # Verifica se e arquivo de segredo
-    if resolved.exists() and is_secret_file(resolved):
+    # --- CAPTURA EXISTENCIA ANTES DA ESCRITA (correcao do bug) ---
+    file_existed = resolved.exists()
+
+    # Verifica se e arquivo de segredo (so se ja existir)
+    if file_existed and is_secret_file(resolved):
         return error_response("secret_file_blocked", detail=f"Arquivo bloqueado por conter segredos: {resolved.name}")
 
     # Verifica tamanho do conteudo
@@ -225,7 +231,7 @@ def tool_write_file(path: str, content: str, create_backup: bool = True) -> dict
 
     # Cria backup se arquivo ja existir
     backup_info = None
-    if resolved.exists() and create_backup:
+    if file_existed and create_backup:
         backup_result = _create_backup(resolved)
         if "error" not in backup_result:
             backup_info = backup_result
@@ -245,7 +251,7 @@ def tool_write_file(path: str, content: str, create_backup: bool = True) -> dict
         "success": True,
         "path": str(resolved),
         "size": len(content_bytes),
-        "action": "created" if not resolved.exists() else "updated",
+        "action": "updated" if file_existed else "created",  # ← corrigido
     }
 
     if backup_info:
