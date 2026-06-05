@@ -36,6 +36,11 @@ Com base no relatório `docs/LigadoAI_Terminal_Chat_Melhorias.md`:
 | 5 | `knowledge/` vazia | 🟡 Pendente | (próxima tarefa) |
 | 6 | `max_tokens_before_summary` confuso | ✅ Corrigido | `config.toml`, `app/config.py` |
 
+### Melhoria Adicional (2026-06-05)
+| Item | Status | Arquivos |
+|------|--------|----------|
+| Suporte a arquivos `.zip` no conversor de documentos | ✅ Implementado | `ligadoai_tools/document_server_zip_fix.py`, `ligadoai_tools/__init__.py` |
+
 ### Comandos Úteis
 - `liga-chat` - Inicia o chat com Cous
 - `liga-up` / `liga-down` / `liga-restart` - Gerencia o OpenTracy
@@ -52,6 +57,8 @@ Com base no relatório `docs/LigadoAI_Terminal_Chat_Melhorias.md`:
 - `app/bootstrap.py` - Paths via config ao invés de hardcoded
 - `app/opentracy_client.py` - Adicionado método list_tools()
 - `ligadoai_tools/filesystem_server.py` - Bug do action corrigido
+- `ligadoai_tools/document_server_zip_fix.py` - Novo: suporte a .zip
+- `ligadoai_tools/__init__.py` - Importa patch zip automaticamente
 - `config.toml` - Adicionado [paths], renomeado max_chars_before_summary
 - `aliases.sh` - Novo, com descrições detalhadas no consulta
 - `fix_bashrc.py` - Script auxiliar
@@ -101,6 +108,29 @@ knowledge/
 **Preencher a base de conhecimento em `knowledge/` com conteúdo técnico.**
 
 A estrutura de pastas está criada, mas vazia (apenas arquivos .gitkeep). O próximo passo é adicionar documentos Markdown, PDFs, imagens e manuais em cada categoria.
+
+### Formato recomendado
+Usar Markdown com metadados YAML no frontmatter para que o CorpusStore indexe com contexto:
+
+```markdown
+---
+fabricante: Cheyenne
+modelo: Hawk Pen
+tipo: rotativa
+motor: brushless-coreless
+---
+
+## Especificações
+
+| Parâmetro         | Valor          |
+|-------------------|----------------|
+| Tensão nominal    | 4.0–8.0 V      |
+| Frequência típica | 100–120 Hz     |
+| Stroke máximo     | 3.5 mm         |
+```
+
+### Suporte a .zip
+A ferramenta `liga-indexar` agora aceita arquivos `.zip` na pasta `knowledge/`. Basta colocar os arquivos zipados e rodar `liga-indexar` que eles serão extraídos e convertidos automaticamente.
 
 ### Sugestão de ordem:
 1. Criar documentos Markdown com conhecimento técnico sobre sistemas mecânicos (direct drive vs swash drive)
