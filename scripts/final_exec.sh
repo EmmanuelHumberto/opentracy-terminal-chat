@@ -1,0 +1,1 @@
+cd /home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat && python3 scripts/build_minimal.py 2>&1

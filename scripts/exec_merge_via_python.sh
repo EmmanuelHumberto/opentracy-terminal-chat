@@ -1,0 +1,1 @@
+bash /home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/scripts/merge_via_python.sh

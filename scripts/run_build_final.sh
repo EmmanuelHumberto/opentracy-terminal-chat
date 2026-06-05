@@ -1,0 +1,1 @@
+cd /home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat && python3 -c "exec(open('scripts/build_final.py').read())"

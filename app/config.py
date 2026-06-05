@@ -8,6 +8,7 @@ ao registrar servidores MCP no OpenTracy.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -57,7 +58,7 @@ class ModelConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     max_history: int = 10
-    max_chars_before_summary: int = 16000  # caracteres totais (resumo + historico + input)
+    max_chars_before_summary: int = 16000
     summary_max_chars: int = 2500
     flatten_history_into_request: bool = True
 
@@ -70,7 +71,7 @@ class MemoryConfig(BaseModel):
 class SecurityConfig(BaseModel):
     allowed_read_dirs: list[str] = ["~/LigadoAI"]
     allowed_write_dirs: list[str] = []
-    max_file_size: int = 10 * 1024 * 1024  # 10 MB
+    max_file_size: int = 10 * 1024 * 1024
     max_tool_output_bytes: int = 65536
     block_secrets: bool = True
 
@@ -117,6 +118,25 @@ class PathsConfig(BaseModel):
         return Path(os.path.expanduser(self.terminal_root)).resolve()
 
 
+class BancoConfig(BaseModel):
+    """Configuracao do banco PostgreSQL."""
+    host: str = "localhost"
+    port: int = 5432
+    database: str = "ligadoai"
+    user: str = "ligadoai"
+    password: str = "ligadoai"
+    min_connections: int = 2
+    max_connections: int = 10
+    vector_dimension: int = 1536
+
+    @property
+    def dsn(self) -> str:
+        return (
+            f"postgresql://{self.user}:{self.password}"
+            f"@{self.host}:{self.port}/{self.database}"
+        )
+
+
 class Config(BaseModel):
     opentracy: OpenTracyConfig = OpenTracyConfig()
     auth: AuthConfig = AuthConfig()
@@ -127,6 +147,38 @@ class Config(BaseModel):
     knowledge: KnowledgeConfig = KnowledgeConfig()
     ui: UiConfig = UiConfig()
     paths: PathsConfig = PathsConfig()
+    banco: BancoConfig = BancoConfig()
+
+    def resolve_paths(self) -> None:
+        """Resolve placeholders {paths.*} em todas as configs que usam caminhos.
+
+        Permite que o config.toml use:
+            allowed_read_dirs = ["{paths.terminal_root}/knowledge"]
+        Em vez de:
+            allowed_read_dirs = ["/home/usuario/..."]
+        """
+        subs = {
+            "paths.opentracy_root": str(self.paths.opentracy_path),
+            "paths.terminal_root": str(self.paths.terminal_path),
+        }
+
+        def _resolve(val: Any) -> Any:
+            if isinstance(val, str):
+                for key, resolved in subs.items():
+                    placeholder = "{" + key + "}"
+                    if placeholder in val:
+                        val = val.replace(placeholder, resolved)
+                return val
+            if isinstance(val, list):
+                return [_resolve(item) for item in val]
+            return val
+
+        # Resolve security dirs
+        self.security.allowed_read_dirs = _resolve(self.security.allowed_read_dirs)
+        self.security.allowed_write_dirs = _resolve(self.security.allowed_write_dirs)
+
+        # Resolve knowledge ingest_target
+        self.knowledge.ingest_target = _resolve(self.knowledge.ingest_target)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +197,9 @@ def load_config(path: Optional[Path] = None) -> Config:
         return Config()
 
     raw = _read_toml(path)
-    return Config(**raw)
+    config = Config(**raw)
+    config.resolve_paths()
+    return config
 
 
 def _find_config() -> Optional[Path]:

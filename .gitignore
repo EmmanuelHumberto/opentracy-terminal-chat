@@ -11,6 +11,7 @@ conversations/
 memory/
 logs/
 knowledge_md/
+knowledge/
 cache/
 
 # Token

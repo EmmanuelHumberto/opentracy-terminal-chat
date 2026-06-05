@@ -1,0 +1,1 @@
+exec(open("/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/scripts/do_merge.py").read())

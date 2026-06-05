@@ -1,0 +1,1 @@
+cd /home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat && python3 scripts/fix_chat.py 2>&1

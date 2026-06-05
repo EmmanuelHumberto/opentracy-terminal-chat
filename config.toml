@@ -23,11 +23,11 @@ flatten_history_into_request = true
 [security]
 allowed_read_dirs = [
     "~/LigadoAI",
-    "/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/knowledge_md",
-    "/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/knowledge",
+    "{paths.terminal_root}/knowledge_md",
+    "{paths.terminal_root}/knowledge",
 ]
 allowed_write_dirs = [
-    "/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/reports",
+    "{paths.terminal_root}/reports",
 ]
 max_file_size = 10485760
 max_tool_output_bytes = 65536
@@ -42,9 +42,9 @@ log_tool_errors = true
 [knowledge]
 source_dir = "knowledge"
 output_dir = "knowledge_md"
-chunk_size = 512
-overlap = 50
-ingest_target = "/home/hiatus/Projetos/ligadotattoo/OpenTracy/corpora/indexed"
+chunk_size = 256
+overlap = 64
+ingest_target = "{paths.opentracy_root}/corpora/indexed"
 
 [ui]
 theme = "dark"
@@ -55,3 +55,15 @@ show_cost = false
 [paths]
 opentracy_root = "~/Projetos/ligadotattoo/OpenTracy"
 terminal_root = "~/Projetos/ligadotattoo/opentracy-terminal-chat"
+
+[banco]
+# PostgreSQL connection
+host = "localhost"
+port = 5432
+database = "ligadoai"
+user = "ligadoai"
+password = "ligadoai"
+min_connections = 2
+max_connections = 10
+# pgvector: habilita busca semântica
+vector_dimension = 1536

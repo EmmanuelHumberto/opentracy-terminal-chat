@@ -1,0 +1,1 @@
+python3 /home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/scripts/merge_v2.py

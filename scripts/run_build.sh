@@ -1,0 +1,1 @@
+bash /home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/scripts/build_chat.sh 2>&1

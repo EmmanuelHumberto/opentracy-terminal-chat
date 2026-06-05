@@ -1,0 +1,1 @@
+cd /home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat && python3 scripts/merge_chat.py

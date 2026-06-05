@@ -1,0 +1,1 @@
+python3 -c "exec(open('/home/hiatus/Projetos/ligadotattoo/opentracy-terminal-chat/scripts/build_minimal.py').read())"
