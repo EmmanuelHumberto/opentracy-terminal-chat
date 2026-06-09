@@ -64,6 +64,8 @@ class ChatContext:
         self.auth_token = auth_token
         self.last_trace_id: Optional[str] = None
         self.base_dir: Path = Path(__file__).resolve().parent.parent
+        self.corpus_client: Any = None  # CorpusClient — lazy init no startup
+        self.runtime_proc: Any = None   # subprocess.Popen do runtime (se auto-iniciado)
 
 
 # ---------------------------------------------------------------------------
@@ -208,80 +210,404 @@ def _cmd_status(*, ctx: ChatContext, **_: Any) -> bool:
     return True
 
 
-def _cmd_indexar(*, ctx: ChatContext, **_: Any) -> bool:
-    """Converte documentos em knowledge/ para Markdown e ingere no CorpusStore."""
-    source_dir = ctx.base_dir / ctx.config.knowledge.source_dir
-    output_dir = ctx.base_dir / ctx.config.knowledge.output_dir
+# ------------------------------------------------------------------ #
+# Inferencia de frontmatter a partir da estrutura de diretorios
+# ------------------------------------------------------------------ #
 
-    if not source_dir.is_dir():
-        print_error(f"Diretorio de origem nao encontrado: {source_dir}")
-        print_info("Crie a pasta knowledge/ e adicione arquivos .md, .txt, .pdf, .docx ou .xlsx.")
-        return True
+# Mapeia nome do diretorio de nivel 1 → tipo para o frontmatter
+_TIPO_POR_DIRETORIO: dict[str, str] = {
+    "01-motores": "motor",
+    "02-sistemas-mecanicos": "sistema",
+    "03-maquinas": "maquina",
+    "04-cartuchos": "documento",
+    "05-fontes": "documento",
+    "06-manuais": "manual",
+    "07-baterias": "documento",
+    "08-medicoes": "documento",
+    "09-diagnosticos": "documento",
+    "10-artigos-cientificos": "artigo",
+    "desenhos-tecnicos": "documento",
+}
 
-    print_info(f"Convertendo documentos de {source_dir}...")
+# Formatos que o document_server consegue converter
+_FORMATOS_CONVERSIVEIS = {".pdf", ".docx", ".xlsx", ".txt", ".jpg", ".png", ".bmp", ".tiff", ".zip"}
+_CATEGORIAS_NAO_FABRICANTE = {
+    "brushless",
+    "coreless",
+    "nucleo",
+    "rotativa",
+    "bobina",
+    "pen",
+    "direct-drive-fixo",
+    "direct-drive-variavel",
+    "swash-drive-fixo",
+    "swash-drive-variavel",
+}
+_FABRICANTES_POR_TEXTO = {
+    "portescap": "Portescap",
+    "faulhaber": "Faulhaber",
+    "maxon": "Maxon",
+    "dklab": "dklab",
+    "cheyenne": "cheyenne",
+}
+
+
+def _inferir_frontmatter(caminho_arquivo: Path, raiz: Path, conteudo: str = "") -> dict[str, str]:
+    """Infere frontmatter YAML a partir da estrutura de diretorios.
+
+    Ex: knowledge/01-motores/brushless/cheyenne/hawk.pdf
+        → {fabricante: cheyenne, modelo: hawk, tipo: motor}
+    """
     try:
-        from ligadoai_tools.document_server import convert_directory
-        conv_result = convert_directory(source_dir, output_dir, recursive=True)
-    except Exception as exc:
-        print_error(f"Erro na conversao: {exc}")
-        return True
+        rel = caminho_arquivo.relative_to(raiz)
+    except ValueError:
+        rel = caminho_arquivo
 
-    if conv_result.get("errors", 0) > 0:
-        for err in conv_result.get("error_details", []):
+    partes = rel.parts
+
+    # Tipo: primeiro nivel de diretorio (ex: "01-motores" → "motor")
+    tipo = "documento"
+    if len(partes) >= 1:
+        tipo = _TIPO_POR_DIRETORIO.get(partes[0], "documento")
+
+    # Fabricante: penultimo nivel se houver 3+ niveis, exceto categorias
+    # tecnicas como "coreless"/"brushless", que nao sao fabricantes.
+    fabricante = "desconhecido"
+    if len(partes) >= 3:
+        candidato = partes[-2]
+        if candidato.lower() not in _CATEGORIAS_NAO_FABRICANTE:
+            fabricante = candidato
+
+    if fabricante == "desconhecido" and conteudo:
+        conteudo_lower = conteudo.lower()
+        for marcador, nome in _FABRICANTES_POR_TEXTO.items():
+            if marcador in conteudo_lower:
+                fabricante = nome
+                break
+
+    # Modelo: nome do arquivo sem extensao
+    modelo = caminho_arquivo.stem
+
+    return {
+        "fabricante": fabricante,
+        "modelo": modelo,
+        "tipo": tipo,
+    }
+
+
+def _gerar_md_com_frontmatter(texto: str, frontmatter: dict[str, str]) -> str:
+    """Gera um Markdown com frontmatter YAML a partir de texto puro."""
+    linhas_yaml = [f"{k}: {v}" for k, v in frontmatter.items()]
+    yaml_str = "\n".join(linhas_yaml)
+    return f"---\n{yaml_str}\n---\n\n{texto}"
+
+
+def _converter_arquivos(alvo: Path, ctx: ChatContext) -> list[Path]:
+    """Converte PDF/DOCX/XLSX/ZIP/etc para .md e retorna a lista de .md resultantes.
+
+    Para diretorios, usa convert_directory() que preserva a estrutura de subpastas.
+    Para arquivos unicos, usa convert_file().
+    """
+    import tempfile
+
+    from ligadoai_tools.document_server import convert_directory, convert_file
+
+    saida = Path(tempfile.mkdtemp(prefix="cous_index_"))
+    raiz_conhecimento = ctx.base_dir / "knowledge"
+
+    if alvo.is_dir():
+        print_info(f"Convertendo documentos de {alvo}...")
+        resultado = convert_directory(alvo, saida, recursive=True)
+    else:
+        print_info(f"Convertendo {alvo.name}...")
+        resultado = convert_file(alvo, saida)
+
+    erros = resultado.get("errors", 0)
+    if erros > 0:
+        for err in resultado.get("error_details", []):
             msg = err.get("error", {}).get("message", "desconhecido")
             print_error(f"  Erro: {msg}")
-    if conv_result.get("partials", 0) > 0:
-        for p in conv_result.get("partial_details", []):
-            detail = p.get("partial", {}).get("detail", "")
-            if detail:
-                print_info(f"  Aviso: {detail}")
 
-    converted = conv_result.get("converted", 0)
-    errors = conv_result.get("errors", 0)
-    partials = conv_result.get("partials", 0)
-    print_info(f"Convertidos: {converted} arquivos, {errors} erros, {partials} avisos de falha parcial.")
+    convertidos = resultado.get("converted", 0)
+    print_info(f"Convertidos: {convertidos} arquivos, {erros} erros")
 
-    if converted == 0:
-        print_error("Nenhum arquivo foi convertido.")
+    if convertidos == 0:
+        return []
+
+    # Coleta .md gerados
+    arquivos_md = sorted(saida.rglob("*.md"))
+    if not arquivos_md:
+        arquivos_md = sorted(saida.rglob("*.txt"))
+
+    # Para cada .md sem frontmatter, injeta frontmatter inferido
+    for md_file in arquivos_md:
+        conteudo = md_file.read_text(encoding="utf-8")
+        if conteudo.startswith("---"):
+            continue  # ja tem frontmatter
+
+        # Tenta inferir da estrutura original (caminho relativo dentro de knowledge/)
+        fm = _inferir_frontmatter(md_file, saida, conteudo)
+        novo_conteudo = _gerar_md_com_frontmatter(conteudo, fm)
+        md_file.write_text(novo_conteudo, encoding="utf-8")
+
+    return arquivos_md
+
+
+def _cmd_indexar(*, ctx: ChatContext, args: str, **_: Any) -> bool:
+    """Indexa documentos de conhecimento no PG e recarrega FAISS do OpenTracy.
+
+    Modos:
+        /indexar                          — converte knowledge/ e indexa tudo
+        /indexar <arquivo.md>             — valida frontmatter YAML e indexa
+        /indexar <pasta/>                 — indexa .md da pasta (ou converte se tiver PDFs)
+        /indexar <arquivo.pdf>            — converte + infere frontmatter + indexa
+        /indexar --dry-run <arquivo>      — apenas valida, sem persistir
+    """
+    dry_run = False
+    caminho_str = args.strip()
+
+    if caminho_str.startswith("--dry-run"):
+        dry_run = True
+        caminho_str = caminho_str[len("--dry-run"):].strip()
+
+    # Modo legado: sem argumentos → processa knowledge/
+    if not caminho_str:
+        alvo = ctx.base_dir / "knowledge"
+    else:
+        alvo = Path(caminho_str)
+        if not alvo.is_absolute():
+            alvo = Path.cwd() / alvo
+        alvo = alvo.resolve()
+
+    if not alvo.exists():
+        print_error(f"Arquivo ou pasta nao encontrado: {alvo}")
         return True
 
-    print_info("Ingerindo no CorpusStore do OpenTracy...")
-    try:
-        import subprocess
+    # Determina se precisa de conversao
+    precisa_conversao = False
+    if alvo.is_dir():
+        # Verifica se ha arquivos nao-.md na pasta
+        for ext in _FORMATOS_CONVERSIVEIS:
+            if list(alvo.rglob(f"*{ext}")):
+                precisa_conversao = True
+                break
+    elif alvo.suffix.lower() in _FORMATOS_CONVERSIVEIS:
+        precisa_conversao = True
 
-        chunk_size = ctx.config.knowledge.chunk_size
-        overlap = ctx.config.knowledge.overlap
-        ingest_target = ctx.config.knowledge.ingest_target
-
-        opentracy_root = ctx.config.paths.opentracy_path
-        opentracy_python = str(opentracy_root / ".venv" / "bin" / "python3")
-        if not Path(opentracy_python).is_file():
-            opentracy_python = str(opentracy_root / ".venv" / "bin" / "python")
-        if not Path(opentracy_python).is_file():
-            opentracy_python = "python3"
-
-        cmd = [opentracy_python, "-m", "corpora.ingest", str(output_dir), "--chunk-size", str(chunk_size), "--overlap", str(overlap)]
-        if ingest_target:
-            cmd.extend(["--root", ingest_target])
-
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, cwd=str(opentracy_root))
-        if result.returncode == 0:
-            print_success(f"Ingest concluido: {result.stdout.strip()}")
-        else:
-            print_error(f"Falha no ingest: {result.stderr[:500]}")
+    # Fase 1: Conversao (se necessario)
+    if precisa_conversao:
+        arquivos_md = _converter_arquivos(alvo, ctx)
+        if not arquivos_md:
+            print_error("Nenhum arquivo convertido.")
             return True
-    except FileNotFoundError:
-        print_error("Comando corpora.ingest nao encontrado.")
-        return True
-    except subprocess.TimeoutExpired:
-        print_error("Timeout de 120s excedido durante ingest.")
-        return True
-    except Exception as exc:
-        print_error(f"Erro no ingest: {exc}")
+    else:
+        # Coleta .md existentes
+        if alvo.is_dir():
+            arquivos_md = sorted(alvo.rglob("*.md"))
+        elif alvo.suffix == ".md":
+            arquivos_md = [alvo]
+        else:
+            print_error(f"Formato nao suportado: {alvo.suffix}. Use .md, .pdf, .docx, .xlsx, .zip")
+            return True
+
+    if not arquivos_md:
+        print_error("Nenhum arquivo .md encontrado.")
         return True
 
-    ctx.logger.log_event(event="indexar", session_id=ctx.sessions.current_id, metadata={"converted": converted, "errors": errors, "partials": partials})
+    # Fase 2: Validacao
+    from app.validador_conhecimento import ValidadorConhecimento, formatar_resultado
+
+    validador = ValidadorConhecimento()
+    aprovados: list[Any] = []
+    rejeitados = 0
+    avisos = 0
+
+    for arquivo in arquivos_md:
+        try:
+            conteudo = arquivo.read_text(encoding="utf-8")
+        except Exception as exc:
+            print_error(f"  Erro ao ler {arquivo.name}: {exc}")
+            rejeitados += 1
+            continue
+
+        resultado = validador.validar(conteudo, source_path=str(arquivo))
+        saida = formatar_resultado(resultado, source_path=arquivo.name)
+        print_info(saida)
+
+        if resultado.rejeitado:
+            rejeitados += 1
+        elif resultado.avisos:
+            avisos += 1
+            if not dry_run:
+                aprovados.append((resultado, str(arquivo)))
+        elif resultado.aprovado:
+            if not dry_run:
+                aprovados.append((resultado, str(arquivo)))
+
+    print_info(f"Total: {len(aprovados)} aprovados, {avisos} avisos, {rejeitados} rejeitados")
+
+    if dry_run:
+        print_info("Dry-run: nada foi persistido.")
+        return True
+
+    if not aprovados:
+        print_info("Nenhum documento aprovado para indexar.")
+        return True
+
+    # Fase 3: Persistencia no PG + reload FAISS
+    async def _persistir_e_reload() -> None:
+        from app.knowledge_syncer import KnowledgeSyncer
+        from app.corpus_client import CorpusClient, CorpusReloadError
+
+        syncer = KnowledgeSyncer(ctx.config.banco, ctx.config.corpus)
+        try:
+            await syncer.conectar()
+
+            for resultado, source_path in aprovados:
+                doc_id = await syncer.sincronizar(resultado, source_path=source_path)
+                if doc_id:
+                    print_success(f"  Indexado: {source_path} → {doc_id[:8]}...")
+                else:
+                    print_error(f"  Falha ao indexar: {source_path}")
+        finally:
+            await syncer.desconectar()
+
+        corpus = CorpusClient(ctx.config.banco, ctx.config.corpus)
+        try:
+            result = await corpus.reload_from_pg()
+            print_success(
+                f"FAISS recarregado: {result['loaded']} chunks, "
+                f"dim={result['dimension']}"
+            )
+        except CorpusReloadError as exc:
+            print_error(f"Falha ao recarregar FAISS: {exc}")
+            print_warning(
+                "Os documentos foram persistidos no PG, mas o FAISS nao "
+                "foi atualizado. Tente /indexar novamente ou verifique "
+                "se o OpenTracy runtime esta rodando."
+            )
+        finally:
+            await corpus.close()
+
+    try:
+        asyncio.run(_persistir_e_reload())
+    except Exception as exc:
+        print_error(f"Erro na indexacao: {exc}")
+        return True
+
+    ctx.logger.log_event(
+        event="indexar",
+        session_id=ctx.sessions.current_id,
+        metadata={"arquivos": len(aprovados), "dry_run": dry_run},
+    )
     print_success("Base de conhecimento indexada com sucesso!")
+    return True
+
+
+def _cmd_indexados(*, ctx: ChatContext, **_: Any) -> bool:
+    """Lista documentos indexados no banco de conhecimento (PG)."""
+    async def _listar() -> list[dict]:
+        from app.knowledge_syncer import KnowledgeSyncer
+        syncer = KnowledgeSyncer(ctx.config.banco, ctx.config.corpus)
+        try:
+            await syncer.conectar()
+            return await syncer.listar_documentos()
+        finally:
+            await syncer.desconectar()
+
+    try:
+        docs = asyncio.run(_listar())
+    except Exception as exc:
+        print_error(f"Erro ao consultar banco: {exc}")
+        return True
+
+    if not docs:
+        print_info("Nenhum documento indexado.")
+        return True
+
+    from rich.table import Table
+    table = Table(title="Documentos Indexados", box=None, show_header=True)
+    table.add_column("ID", style="bold cyan", width=10)
+    table.add_column("Fabricante", width=14)
+    table.add_column("Modelo", width=18)
+    table.add_column("Tipo", width=12)
+    table.add_column("Status", width=10)
+    table.add_column("Chunks", justify="right", width=7)
+    table.add_column("Data", width=20)
+
+    for d in docs:
+        status_icon = {"aprovado": "✅", "aviso": "⚠️", "rejeitado": "❌"}.get(d["status"], "❓")
+        table.add_row(
+            d["id"][:8],
+            d.get("fabricante") or "-",
+            d.get("modelo") or "-",
+            d.get("tipo") or "-",
+            status_icon,
+            str(d.get("n_chunks", 0)),
+            (d.get("indexado_em") or "-")[:19],
+        )
+
+    _console.print()
+    _console.print(table)
+    _console.print()
+    print_info(f"Total: {len(docs)} documento(s)")
+    return True
+
+
+def _cmd_remover(*, ctx: ChatContext, args: str, **_: Any) -> bool:
+    """Remove um documento do banco de conhecimento e recarrega FAISS.
+
+    Uso: /remover <id_do_documento>
+    """
+    doc_id = args.strip()
+    if not doc_id:
+        print_error("Uso: /remover <id_do_documento>")
+        print_info("Use /indexados para ver os IDs disponiveis.")
+        return True
+
+    async def _remover_e_reload() -> None:
+        from app.knowledge_syncer import KnowledgeSyncer
+        from app.corpus_client import CorpusClient, CorpusReloadError
+
+        syncer = KnowledgeSyncer(ctx.config.banco, ctx.config.corpus)
+        try:
+            await syncer.conectar()
+            removido = await syncer.remover_documento(doc_id)
+        finally:
+            await syncer.desconectar()
+
+        if not removido:
+            print_error(f"Documento nao encontrado: {doc_id}")
+            return
+
+        print_success(f"Documento removido: {doc_id[:8]}...")
+
+        # Recarrega FAISS
+        corpus = CorpusClient(ctx.config.banco, ctx.config.corpus)
+        try:
+            result = await corpus.reload_from_pg()
+            print_success(
+                f"FAISS recarregado: {result['loaded']} chunks, "
+                f"dim={result['dimension']}"
+            )
+        except CorpusReloadError as exc:
+            print_error(f"Falha ao recarregar FAISS: {exc}")
+            print_warning("O documento foi removido do PG, mas o FAISS nao foi atualizado.")
+        finally:
+            await corpus.close()
+
+    try:
+        asyncio.run(_remover_e_reload())
+    except ValueError as exc:
+        print_error(str(exc))
+    except Exception as exc:
+        print_error(f"Erro ao remover documento: {exc}")
+
+    ctx.logger.log_event(
+        event="remover_documento",
+        session_id=ctx.sessions.current_id,
+        metadata={"doc_id": doc_id},
+    )
     return True
 
 
@@ -684,7 +1010,9 @@ def build_router() -> CommandRouter:
     router.register("carregar", _cmd_carregar, description="Carrega sessao")
     router.register("status", _cmd_status, description="Status do OpenTracy")
     router.register("tools", _cmd_tools, description="Lista MCP tools")
-    router.register("indexar", _cmd_indexar, description="Indexa documentos")
+    router.register("indexar", _cmd_indexar, description="Indexa documentos no PG + FAISS")
+    router.register("indexados", _cmd_indexados, description="Lista documentos indexados")
+    router.register("remover", _cmd_remover, description="Remove documento do indice")
     router.register("capturar", _cmd_capturar, description="Inicia captura de metricas")
     router.register("medicoes", _cmd_medicoes, description="Lista sessoes de medicao")
     router.register("medicao", _cmd_medicao, description="Detalhes de uma sessao")
@@ -696,10 +1024,38 @@ def run_chat_loop(ctx: ChatContext) -> None:
     """Loop principal do chat."""
     print_welcome(ctx.config.opentracy.agent_id, ctx.sessions.current_id)
 
+    # --- Startup: carrega base de conhecimento no FAISS do OpenTracy ---
+    if ctx.config.corpus.backend == "postgresql":
+        async def _startup_corpus() -> None:
+            from app.corpus_client import CorpusClient, CorpusReloadError
+            ctx.corpus_client = CorpusClient(ctx.config.banco, ctx.config.corpus)
+            try:
+                result = await ctx.corpus_client.ensure_loaded()
+                print_info(
+                    f"Base de conhecimento carregada: {result['loaded']} chunks, "
+                    f"dim={result['dimension']}"
+                )
+            except CorpusReloadError as exc:
+                print_warning(f"Base de conhecimento nao carregada: {exc}")
+                print_info("O chat funciona normalmente, mas sem RAG. "
+                           "Use /indexar para popular a base.")
+            except Exception as exc:
+                print_warning(f"Erro ao carregar base de conhecimento: {exc}")
+
+        try:
+            asyncio.run(_startup_corpus())
+        except Exception:
+            pass  # Falha no carregamento da base nao bloqueia o chat
+
     while True:
         user_input = prompt_input()
         if not user_input:
             continue
+
+        # Calcula uso de memoria para a barra de status
+        session = ctx.sessions.current
+        messages = session.get_all()
+        total_chars = sum(len(m.get("content", "")) for m in messages)
 
         if user_input.startswith("/"):
             cmd_name = user_input[1:].strip().split(maxsplit=1)[0].lower()
@@ -719,9 +1075,6 @@ def run_chat_loop(ctx: ChatContext) -> None:
             except Exception as exc:
                 print_error(f"Erro no comando /{cmd_name}: {exc}")
         else:
-            session = ctx.sessions.current
-            messages = session.get_all()
-
             session.add_message("user", user_input)
             ctx.logger.log_event(
                 event="user_message",
@@ -729,7 +1082,6 @@ def run_chat_loop(ctx: ChatContext) -> None:
                 metadata={"content_preview": user_input[:100]},
             )
 
-            total_chars = sum(len(m.get("content", "")) for m in messages)
             if total_chars > ctx.config.memory.max_chars_before_summary:
                 print_warning("Memória cheia — resumindo...")
                 _cmd_resumo(ctx=ctx)

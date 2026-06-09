@@ -88,14 +88,6 @@ class McpConfig(BaseModel):
         return max(5, v)
 
 
-class KnowledgeConfig(BaseModel):
-    source_dir: str = "knowledge"
-    output_dir: str = "knowledge_md"
-    chunk_size: int = 512
-    overlap: int = 50
-    ingest_target: str = "../OpenTracy/corpora/indexed"
-
-
 class UiConfig(BaseModel):
     theme: str = "dark"
     show_timestamp: bool = True
@@ -127,7 +119,7 @@ class BancoConfig(BaseModel):
     password: str = "ligadoai"
     min_connections: int = 2
     max_connections: int = 10
-    vector_dimension: int = 1536
+    vector_dimension: int = 384
 
     @property
     def dsn(self) -> str:
@@ -137,6 +129,16 @@ class BancoConfig(BaseModel):
         )
 
 
+class CorpusConfig(BaseModel):
+    """Configuracao do backend de corpus (base de conhecimento)."""
+    backend: str = "postgresql"  # "postgresql" | "filesystem"
+    embedder_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    chunk_size: int = 256
+    overlap: int = 64
+    open_tracy_reload_url: str = "http://localhost:8001/corpus/reload"
+    reload_timeout: int = 30
+
+
 class Config(BaseModel):
     opentracy: OpenTracyConfig = OpenTracyConfig()
     auth: AuthConfig = AuthConfig()
@@ -144,10 +146,10 @@ class Config(BaseModel):
     memory: MemoryConfig = MemoryConfig()
     security: SecurityConfig = SecurityConfig()
     mcp: McpConfig = McpConfig()
-    knowledge: KnowledgeConfig = KnowledgeConfig()
     ui: UiConfig = UiConfig()
     paths: PathsConfig = PathsConfig()
     banco: BancoConfig = BancoConfig()
+    corpus: CorpusConfig = CorpusConfig()
 
     def resolve_paths(self) -> None:
         """Resolve placeholders {paths.*} em todas as configs que usam caminhos.
@@ -176,9 +178,6 @@ class Config(BaseModel):
         # Resolve security dirs
         self.security.allowed_read_dirs = _resolve(self.security.allowed_read_dirs)
         self.security.allowed_write_dirs = _resolve(self.security.allowed_write_dirs)
-
-        # Resolve knowledge ingest_target
-        self.knowledge.ingest_target = _resolve(self.knowledge.ingest_target)
 
 
 # ---------------------------------------------------------------------------

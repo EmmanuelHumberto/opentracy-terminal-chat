@@ -601,6 +601,100 @@ class RepositorioMedicoesPG:
             return dict(row) if row else {}
 
     # ================================================================== #
+    # DOCUMENTOS DA BASE DE CONHECIMENTO (pgvector)
+    # ================================================================== #
+
+    async def limpar_documentos(self) -> None:
+        """Remove todos os documentos da base de conhecimento."""
+        self._assert_conectado()
+        assert self._pool is not None
+        async with self._pool.acquire() as conn:
+            await conn.execute("DELETE FROM documentos_conhecimento")
+
+    async def ingerir_documentos(self, chunks: list[dict]) -> int:
+        """Ingere chunks de documentos no PostgreSQL com embeddings pgvector.
+
+        Cada chunk deve ter: caminho, titulo, conteudo, chunk_texto, chunk_index.
+        Os embeddings sao gerados com MiniLM-L6 (384 dims), com zero-padding para 1536.
+
+        Returns:
+            Numero de chunks ingeridos.
+        """
+        self._assert_conectado()
+        assert self._pool is not None
+
+        if not chunks:
+            return 0
+
+        from sentence_transformers import SentenceTransformer
+        import numpy as np
+
+        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        textos = [c["chunk_texto"] for c in chunks]
+        embeddings = model.encode(textos, show_progress_bar=False)
+
+        if embeddings.shape[1] < 1536:
+            padded = np.zeros((embeddings.shape[0], 1536), dtype=np.float32)
+            padded[:, :embeddings.shape[1]] = embeddings
+            embeddings = padded
+
+        total = 0
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                for i, chunk in enumerate(chunks):
+                    vetor = embeddings[i].tolist()
+                    await conn.execute(
+                        """INSERT INTO documentos_conhecimento
+                           (caminho, titulo, conteudo, chunk_index, chunk_texto, chunk_vetor)
+                           VALUES ($1, $2, $3, $4, $5, $6::vector)""",
+                        chunk.get("caminho", ""),
+                        chunk.get("titulo", ""),
+                        chunk.get("conteudo", ""),
+                        chunk.get("chunk_index", 0),
+                        chunk.get("chunk_texto", ""),
+                        vetor,
+                    )
+                    total += 1
+
+        return total
+
+    async def buscar_documentos_semanticos(
+        self, query: str, limite: int = 10
+    ) -> list[dict]:
+        """Busca documentos semanticamente similares usando pgvector.
+
+        Returns:
+            Lista de dicts com: caminho, titulo, chunk_texto, similaridade.
+        """
+        self._assert_conectado()
+        assert self._pool is not None
+
+        from sentence_transformers import SentenceTransformer
+        import numpy as np
+
+        model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+        q_embedding = model.encode([query], show_progress_bar=False)[0]
+
+        if len(q_embedding) < 1536:
+            padded = np.zeros(1536, dtype=np.float32)
+            padded[:len(q_embedding)] = q_embedding
+            q_embedding = padded
+
+        q_vetor = q_embedding.tolist()
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT caminho, titulo, chunk_texto, chunk_index,
+                   1 - (chunk_vetor <=> $1::vector) AS similaridade
+                   FROM documentos_conhecimento
+                   ORDER BY chunk_vetor <=> $1::vector
+                   LIMIT $2""",
+                q_vetor,
+                limite,
+            )
+            return [dict(r) for r in rows]
+
+    # ================================================================== #
     # PARAMETROS IDEAIS
     # ================================================================== #
 

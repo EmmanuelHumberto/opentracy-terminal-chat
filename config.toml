@@ -23,7 +23,6 @@ flatten_history_into_request = true
 [security]
 allowed_read_dirs = [
     "~/LigadoAI",
-    "{paths.terminal_root}/knowledge_md",
     "{paths.terminal_root}/knowledge",
 ]
 allowed_write_dirs = [
@@ -38,13 +37,6 @@ tool_timeout_seconds = 30
 max_restarts_per_server = 3
 restart_backoff_seconds = 5
 log_tool_errors = true
-
-[knowledge]
-source_dir = "knowledge"
-output_dir = "knowledge_md"
-chunk_size = 256
-overlap = 64
-ingest_target = "{paths.opentracy_root}/corpora/indexed"
 
 [ui]
 theme = "dark"
@@ -66,4 +58,14 @@ password = "ligadoai"
 min_connections = 2
 max_connections = 10
 # pgvector: habilita busca semântica
-vector_dimension = 1536
+vector_dimension = 384
+
+[corpus]
+# Backend da base de conhecimento: "postgresql" | "filesystem"
+backend = "postgresql"
+# Modelo de embedding leve e publico no Hugging Face (384 dimensoes).
+embedder_model = "sentence-transformers/all-MiniLM-L6-v2"
+chunk_size = 256
+overlap = 64
+open_tracy_reload_url = "http://localhost:8001/corpus/reload"
+reload_timeout = 30

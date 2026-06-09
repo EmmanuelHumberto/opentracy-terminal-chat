@@ -13,6 +13,7 @@ logs/
 knowledge_md/
 knowledge/
 cache/
+models/
 
 # Token
 .ligadoai/
